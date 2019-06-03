@@ -1,0 +1,210 @@
+apiVersion: v1
+kind: Template
+metadata:
+  name: kube-state-metrics
+objects:
+- apiVersion: v1
+  kind: ImageStream
+  metadata:
+    name: ose-oauth-proxy
+  spec:
+    lookupPolicy:
+      local: false
+    tags:
+    - annotations: null
+      from:
+        kind: DockerImage
+        name: registry.access.redhat.com/openshift3/oauth-proxy:v3.11
+      importPolicy:
+        scheduled: ${{SCHEDULE_IMAGE_IMPORTS}}
+      name: latest
+      referencePolicy:
+        type: Source
+- apiVersion: v1
+  kind: ImageStream
+  metadata:
+    name: ose-kube-state-metrics
+  spec:
+    lookupPolicy:
+      local: false
+    tags:
+    - annotations: null
+      from:
+        kind: DockerImage
+        name: registry.access.redhat.com/openshift3/ose-kube-state-metrics:v3.11
+      importPolicy:
+        scheduled: ${{SCHEDULE_IMAGE_IMPORTS}}
+      name: latest
+      referencePolicy:
+        type: Source
+- apiVersion: v1
+  kind: ServiceAccount
+  metadata:
+    labels:
+      k8s-app: kube-state-metrics
+    name: kube-state-metrics
+- apiVersion: v1
+  stringData:
+    session_secret: ${KUBE_STATE_METRICS_SESSION_SECRET}
+  kind: Secret
+  metadata:
+    labels:
+      k8s-app: kube-state-metrics
+    name: kube-state-metrics-session-secret
+  type: Opaque
+- apiVersion: v1
+  kind: Service
+  metadata:
+    annotations:
+      service.alpha.openshift.io/serving-cert-secret-name: kube-state-metrics-tls
+    labels:
+      k8s-app: kube-state-metrics
+    name: kube-state-metrics
+  spec:
+    clusterIP: None
+    ports:
+    - name: https-main
+      port: 8443
+      protocol: TCP
+      targetPort: https-main
+    - name: https-self
+      port: 9443
+      protocol: TCP
+      targetPort: https-self
+    selector:
+      k8s-app: kube-state-metrics
+    sessionAffinity: None
+    type: ClusterIP
+- apiVersion: extensions/v1beta1
+  kind: Deployment
+  metadata:
+    annotations:
+      image.openshift.io/triggers: |
+        [
+          {"from":{"kind":"ImageStreamTag","name":"ose-oauth-proxy:latest"},"fieldPath":"spec.template.spec.containers[?(@.name==\"oauth-proxy-main\")].image"},
+          {"from":{"kind":"ImageStreamTag","name":"ose-oauth-proxy:latest"},"fieldPath":"spec.template.spec.containers[?(@.name==\"oauth-proxy-self\")].image"},
+          {"from":{"kind":"ImageStreamTag","name":"ose-kube-state-metrics:latest"},"fieldPath":"spec.template.spec.containers[?(@.name==\"kube-state-metrics\")].image"}
+        ]
+    labels:
+      k8s-app: kube-state-metrics
+    name: kube-state-metrics
+  spec:
+    progressDeadlineSeconds: 600
+    replicas: 1
+    revisionHistoryLimit: 10
+    selector:
+      matchLabels:
+        k8s-app: kube-state-metrics
+    strategy:
+      rollingUpdate:
+        maxSurge: 25%
+        maxUnavailable: 25%
+      type: RollingUpdate
+    template:
+      metadata:
+        labels:
+          k8s-app: kube-state-metrics
+      spec:
+        containers:
+        - env:
+          - name: NAMESPACE
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.namespace
+          args:
+          - -provider=openshift
+          - -https-address=:8443
+          - -http-address=
+          - -upstream=http://localhost:8081
+          - -upstream-ca=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+          - -openshift-service-account=kube-state-metrics
+          - '-openshift-delegate-urls={"/": {"namespace":"$(NAMESPACE)","resource":"services","name":"kube-state-metrics","verb":"get"}}'
+          - -tls-cert=/etc/tls/private/tls.crt
+          - -tls-key=/etc/tls/private/tls.key
+          - -client-secret-file=/var/run/secrets/kubernetes.io/serviceaccount/token
+          - -cookie-secret-file=/etc/proxy/secrets/session_secret
+          - -openshift-ca=/etc/pki/tls/cert.pem
+          - -openshift-ca=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+          image: ose-oauth-proxy:latest
+          name: oauth-proxy-main
+          ports:
+          - containerPort: 8443
+            name: https-main
+          resources: {}
+          volumeMounts:
+          - mountPath: /etc/tls/private
+            name: kube-state-metrics-tls
+          - mountPath: /etc/proxy/secrets
+            name: kube-state-metrics-session-secret
+        - env:
+          - name: NAMESPACE
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.namespace
+          args:
+          - -provider=openshift
+          - -https-address=:9443
+          - -http-address=
+          - -upstream=http://localhost:8082
+          - -upstream-ca=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+          - -openshift-service-account=kube-state-metrics
+          - '-openshift-delegate-urls={"/": {"namespace":"$(NAMESPACE)","resource":"services","name":"kube-state-metrics","verb":"get"}}'
+          - -tls-cert=/etc/tls/private/tls.crt
+          - -tls-key=/etc/tls/private/tls.key
+          - -client-secret-file=/var/run/secrets/kubernetes.io/serviceaccount/token
+          - -cookie-secret-file=/etc/proxy/secrets/session_secret
+          - -openshift-ca=/etc/pki/tls/cert.pem
+          - -openshift-ca=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+          image: ose-oauth-proxy:latest
+          name: oauth-proxy-self
+          ports:
+          - containerPort: 0443
+            name: https-self
+          resources: {}
+          volumeMounts:
+          - mountPath: /etc/tls/private
+            name: kube-state-metrics-tls
+          - mountPath: /etc/proxy/secrets
+            name: kube-state-metrics-session-secret
+        - args:
+          - --host=127.0.0.1
+          - --port=8081
+          - --telemetry-host=127.0.0.1
+          - --telemetry-port=8082
+          - --collectors=configmaps,cronjobs,daemonsets,deployments,endpoints,horizontalpodautoscalers,jobs,limitranges,namespaces,nodes,persistentvolumeclaims,persistentvolumes,pods,replicasets,replicationcontrollers,resourcequotas,services,statefulsets
+          image: ose-kube-state-metrics:latest
+          imagePullPolicy: IfNotPresent
+          name: kube-state-metrics
+          resources: {}
+          terminationMessagePath: /dev/termination-log
+          terminationMessagePolicy: File
+          volumeMounts:
+          - mountPath: /tmp
+            name: volume-directive-shadow
+        dnsPolicy: ClusterFirst
+        restartPolicy: Always
+        schedulerName: default-scheduler
+        securityContext: {}
+        serviceAccount: kube-state-metrics
+        serviceAccountName: kube-state-metrics
+        terminationGracePeriodSeconds: 30
+        volumes:
+        - name: kube-state-metrics-session-secret
+          secret:
+            defaultMode: 420
+            secretName: kube-state-metrics-session-secret
+        - emptyDir: {}
+          name: volume-directive-shadow
+        - name: kube-state-metrics-tls
+          secret:
+            defaultMode: 420
+            secretName: kube-state-metrics-tls
+parameters:
+- description: Whether to import new images automatically.
+  name: SCHEDULE_IMAGE_IMPORTS
+  value: 'false'
+- description: Secret used for kube state metrics proxy session signing
+  displayName: Kube State Metrics Proxy Session Secret
+  name: KUBE_STATE_METRICS_SESSION_SECRET
+  generate: expression
+  from: "[a-zA-Z0-9]{32}"

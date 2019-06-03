@@ -1,0 +1,246 @@
+apiVersion: v1
+kind: Template
+metadata:
+  name: openshift-prometheus-proxy
+objects:
+- apiVersion: v1
+  kind: Role
+  metadata:
+    name: access-openshift-prometheus-proxy
+  rules:
+  - apiGroups:
+    - ""
+    resourceNames:
+    - openshift-prometheus-proxy
+    resources:
+    - services
+    verbs:
+    - get
+- apiVersion: v1
+  groupNames: null
+  kind: RoleBinding
+  metadata:
+    name: view:openshift-prometheus-proxy
+  roleRef:
+    name: view
+  subjects:
+  - kind: ServiceAccount
+    name: openshift-prometheus-proxy
+  userNames: null
+- apiVersion: v1
+  kind: ServiceAccount
+  metadata:
+    labels:
+      app: openshift-prometheus-proxy
+    name: openshift-prometheus-proxy
+- apiVersion: v1
+  kind: ImageStream
+  metadata:
+    labels:
+      app: openshift-prometheus-proxy
+    name: openshift-prometheus-proxy-base
+  spec:
+    lookupPolicy:
+      local: false
+    tags:
+    - annotations: null
+      from:
+        kind: DockerImage
+        name: registry.access.redhat.com/rhscl/python-36-rhel7:latest
+      importPolicy:
+        scheduled: ${{SCHEDULE_IMAGE_IMPORTS}}
+      name: latest
+      referencePolicy:
+        type: Source
+- apiVersion: v1
+  kind: ImageStream
+  metadata:
+    name: ose-oauth-proxy
+  spec:
+    lookupPolicy:
+      local: false
+    tags:
+    - annotations: null
+      from:
+        kind: DockerImage
+        name: registry.access.redhat.com/openshift3/oauth-proxy:v3.11
+      importPolicy:
+        scheduled: ${{SCHEDULE_IMAGE_IMPORTS}}
+      name: latest
+      referencePolicy:
+        type: Source
+- apiVersion: v1
+  kind: ImageStream
+  metadata:
+    labels:
+      app: openshift-prometheus-proxy
+    name: openshift-prometheus-proxy
+  spec:
+    lookupPolicy:
+      local: false
+- apiVersion: v1
+  kind: BuildConfig
+  metadata:
+    labels:
+      app: openshift-prometheus-proxy
+    name: openshift-prometheus-proxy
+  spec:
+    successfulBuildsHistoryLimit: 3
+    failedBuildsHistoryLimit: 3
+    nodeSelector: null
+    output:
+      to:
+        kind: ImageStreamTag
+        name: openshift-prometheus-proxy:latest
+    postCommit: {}
+    resources: {}
+    source:
+      git:
+        uri: https://github.com/appuio/openshift-prometheus-proxy
+      type: Git
+    strategy:
+      sourceStrategy:
+        from:
+          kind: ImageStreamTag
+          name: openshift-prometheus-proxy-base:latest
+      type: Source
+    triggers:
+    - type: ConfigChange
+    - imageChange: {}
+      type: ImageChange
+- apiVersion: v1
+  stringData:
+    session_secret: ${OPENSHIFT_PROMETHEUS_PROXY_SESSION_SECRET}
+  kind: Secret
+  metadata:
+    labels:
+      app: openshift-prometheus-proxy
+    name: openshift-prometheus-proxy-session-secret
+  type: Opaque
+- apiVersion: v1
+  kind: Service
+  metadata:
+    annotations:
+      service.alpha.openshift.io/serving-cert-secret-name: openshift-prometheus-proxy-tls
+    labels:
+      app: openshift-prometheus-proxy
+    name: openshift-prometheus-proxy
+  spec:
+    ports:
+    - name: web
+      port: 8443
+      protocol: TCP
+      targetPort: 8443
+    selector:
+      app: openshift-prometheus-proxy
+    sessionAffinity: None
+    type: ClusterIP
+- apiVersion: v1
+  kind: Route
+  metadata:
+    labels:
+      app: openshift-prometheus-proxy
+    name: openshift-prometheus-proxy
+  spec:
+    host: ${OPENSHIFT_PROMETHEUS_PROXY_HOSTNAME}
+    port:
+      targetPort: web
+    tls:
+      termination: reencrypt
+      insecureEdgeTerminationPolicy: Redirect
+    to:
+      kind: Service
+      name: openshift-prometheus-proxy
+      weight: 100
+    wildcardPolicy: None
+- apiVersion: apps/v1
+  kind: Deployment
+  metadata:
+    annotations:
+      image.openshift.io/triggers:  |
+        [
+          {"from":{"kind":"ImageStreamTag","name":"ose-oauth-proxy:latest"},"fieldPath":"spec.template.spec.containers[?(@.name==\"oauth-proxy\")].image"},
+          {"from":{"kind":"ImageStreamTag","name":"openshift-prometheus-proxy:latest"},"fieldPath":"spec.template.spec.containers[?(@.name==\"openshift-prometheus-proxy\")].image"}
+        ]
+    labels:
+      app: openshift-prometheus-proxy
+    name: openshift-prometheus-proxy
+  spec:
+    replicas: 1
+    revisionHistoryLimit: 3
+    selector:
+      matchLabels:
+        app: openshift-prometheus-proxy
+    strategy:
+      type: RollingUpdate
+    template:
+      metadata:
+        labels:
+          app: openshift-prometheus-proxy
+      spec:
+        containers:
+        - image: openshift-prometheus-proxy:latest
+          name: openshift-prometheus-proxy
+          ports:
+          - containerPort: 8080
+            protocol: TCP
+          resources: {}
+        - env:
+          - name: NAMESPACE
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.namespace
+          args:
+          - -provider=openshift
+          - -https-address=:8443
+          - -http-address=
+          - -upstream=http://localhost:8080
+          - -upstream-ca=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+          - -pass-user-bearer-token
+          - -openshift-service-account=openshift-prometheus-proxy
+          - '-openshift-delegate-urls={"/": {"namespace":"$(NAMESPACE)","resource":"services","name":"openshift-prometheus-proxy","verb":"get"}}'
+          - -tls-cert=/etc/tls/private/tls.crt
+          - -tls-key=/etc/tls/private/tls.key
+          - -client-secret-file=/var/run/secrets/kubernetes.io/serviceaccount/token
+          - -cookie-secret-file=/etc/proxy/secrets/session_secret
+          - -openshift-ca=/etc/pki/tls/cert.pem
+          - -openshift-ca=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+          image: ose-oauth-proxy:latest
+          name: oauth-proxy
+          ports:
+          - containerPort: 8443
+            name: web
+          resources: {}
+          volumeMounts:
+          - mountPath: /etc/tls/private
+            name: openshift-prometheus-proxy-tls
+          - mountPath: /etc/proxy/secrets
+            name: openshift-prometheus-proxy-session-secret
+        dnsPolicy: ClusterFirst
+        restartPolicy: Always
+        schedulerName: default-scheduler
+        securityContext: {}
+        serviceAccount: openshift-prometheus-proxy
+        serviceAccountName: openshift-prometheus-proxy
+        terminationGracePeriodSeconds: 10
+        volumes:
+        - name: openshift-prometheus-proxy-session-secret
+          secret:
+            defaultMode: 420
+            secretName: openshift-prometheus-proxy-session-secret
+        - name: openshift-prometheus-proxy-tls
+          secret:
+            defaultMode: 420
+            secretName: openshift-prometheus-proxy-tls
+parameters:
+- description: Whether to import new images automatically.
+  name: SCHEDULE_IMAGE_IMPORTS
+  value: 'false'
+- description: Whether to import new images automatically.
+  name: OPENSHIFT_PROMETHEUS_PROXY_HOSTNAME
+  required: true
+- description: Secret used for node metrics proxy session signing
+  displayName: Node Metrics Proxy Session Secret
+  name: OPENSHIFT_PROMETHEUS_PROXY_SESSION_SECRET
+  generate: expression
+  from: "[a-zA-Z0-9]{32}"

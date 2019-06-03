@@ -1,0 +1,131 @@
+apiVersion: v1
+kind: Template
+metadata:
+  name: kube-state-metrics
+objects:
+- apiVersion: v1
+  kind: Service
+  metadata:
+    labels:
+      k8s-app: kube-state-metrics
+    name: kube-state-metrics
+  spec:
+    clusterIP: None
+    ports:
+    - name: https-main
+      port: 8443
+      protocol: TCP
+      targetPort: https-main
+    - name: https-self
+      port: 9443
+      protocol: TCP
+      targetPort: https-self
+    selector: {}
+    sessionAffinity: None
+    type: ClusterIP
+- kind: Endpoints
+  apiVersion: v1
+  metadata:
+    labels:
+      k8s-app: kube-state-metrics
+    name: kube-state-metrics
+  subsets:
+  - addresses:
+    - ip: 10.0.0.0  # dummy address, not used but required by resource
+    ports:
+    - name: https-main
+      port: 8443
+      protocol: TCP
+    - name: https-self
+      port: 9443
+      protocol: TCP
+- apiVersion: monitoring.coreos.com/v1
+  kind: ServiceMonitor
+  metadata:
+    labels:
+      k8s-app: kube-state-metrics
+      prometheus: ${PROMETHEUS_ID}
+    name: kube-state-metrics
+  spec:
+    endpoints:
+    - bearerTokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token
+      honorLabels: true
+      interval: 2m
+      port: https-main
+      scheme: https
+      scrapeTimeout: 2m
+      targetPort: 0
+      tlsConfig:
+        caFile: /var/run/secrets/kubernetes.io/serviceaccount/service-ca.crt
+        insecureSkipVerify: ${{SERVICE_MONITOR_SKIP_TLS_VERIFY}}
+      relabelings:
+      - action: replace
+        regex: ([^;]+);[^:]+:([^;]+);([^;]+)
+        replacement: /services/https:$1:$2/proxy$3
+        separator: ;
+        sourceLabels:
+        - __meta_kubernetes_service_name
+        - __address__
+        - __metrics_path__
+        targetLabel: __metrics_path__
+      - action: replace
+        replacement: $1--$2:$3
+        sourceLabels:
+        - __meta_kubernetes_namespace
+        - __meta_kubernetes_service_name
+        - __address__
+        separator: ;
+        regex: ([^;]+);([^;]+);[^:]+:(.+)
+        targetLabel: instance
+      - action: replace
+        replacement: ${OPENSHIFT_PROMETHEUS_PROXY_HOSTNAME}
+        targetLabel: __address__
+    - bearerTokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token
+      interval: 2m
+      port: https-self
+      scheme: https
+      scrapeTimeout: 2m
+      targetPort: 0
+      tlsConfig:
+        caFile: /var/run/secrets/kubernetes.io/serviceaccount/service-ca.crt
+        insecureSkipVerify: ${{SERVICE_MONITOR_SKIP_TLS_VERIFY}}
+      relabelings:
+      - action: replace
+        regex: ([^;]+);[^:]+:([^;]+);([^;]+)
+        replacement: /services/https:$1:$2/proxy$3
+        separator: ;
+        sourceLabels:
+        - __meta_kubernetes_service_name
+        - __address__
+        - __metrics_path__
+        targetLabel: __metrics_path__
+      - action: replace
+        replacement: $1--$2:$3
+        sourceLabels:
+        - __meta_kubernetes_namespace
+        - __meta_kubernetes_service_name
+        - __address__
+        separator: ;
+        regex: ([^;]+);([^;]+);[^:]+:(.+)
+        targetLabel: instance
+      - action: replace
+        replacement: ${OPENSHIFT_PROMETHEUS_PROXY_HOSTNAME}
+        targetLabel: __address__
+    jobLabel: k8s-app
+    namespaceSelector: {}
+    selector:
+      matchLabels:
+        k8s-app: kube-state-metrics
+parameters:
+- description: 'External hostname of OpenShift Prometheus Proxy.'
+  name: OPENSHIFT_PROMETHEUS_PROXY_HOSTNAME
+  required: true
+- description: Whether to import new images automatically.
+  name: SCHEDULE_IMAGE_IMPORTS
+  value: 'false'
+- description: ID of Prometheus instance, is used in label keys and must be unique on cluster. Defaults to 'apps'.
+  name: PROMETHEUS_ID
+  value: apps
+- description: Whether to skip TLS certificate verification in the kube-state-metrics ServiceMonitor. Defaults to 'false'.
+  name: SERVICE_MONITOR_SKIP_TLS_VERIFY
+  value: 'false'
