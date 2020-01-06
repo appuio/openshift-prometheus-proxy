@@ -1,2 +1,1 @@
 openshift
-prometheus_client

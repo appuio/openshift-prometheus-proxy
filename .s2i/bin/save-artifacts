@@ -1,0 +1,8 @@
+#!/bin/bash
+
+pushd /opt/app-root >/dev/null
+if [ -d lib/python3.*/site-packages ]; then
+    # all deps contents to tar stream
+    tar cf - lib/python3.*/site-packages
+fi
+popd >/dev/null

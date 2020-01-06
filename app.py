@@ -1,68 +1,59 @@
 #!/usr/bin/env python3
 
 import os
-import pathlib
 import re
 import sys
-from http.server import HTTPServer
-from socketserver import ForkingMixIn
+from functools import partial
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from socketserver import ThreadingMixIn
 
 import kubernetes
 import openshift.dynamic
 import openshift.dynamic.exceptions
 import requests
 from kubernetes.client.rest import ApiException
-from prometheus_client import CollectorRegistry, MetricsHandler
-from prometheus_client.parser import text_string_to_metric_families
-
-PROXY_PATH_REGEX = re.compile('/(nodes|services)/((https):)?([^/:]+)(:([0-9]+))?/proxy/(.*)')
-
-# Prometheus custom collector filtering metrics by namespace label
-class ProxyCollector(object):
-    def __init__(self, metric_families, namespaces):
-        self.metric_families = metric_families
-        self.namespaces = namespaces
-
-    def collect(self):
-        for family in self.metric_families:
-            # Only keep samples where the namespace label exists and its value is one of the namespaces the request user has access to.
-            family.samples[:] = [sample for sample in family.samples if sample.labels.get('namespace', None) in self.namespaces]
-            yield family
 
 
-# Use our own HTTPServer so we can use our own handler and get access to the HTTP headers.
-class ForkingHTTPServer(ForkingMixIn, HTTPServer):
+class ProxyHTTPServer(ThreadingMixIn, HTTPServer):
     pass
 
 
-# Prometheus metrics handler proxying and filtering metrics from an upstream exporter
-class ProxyMetricsHandler(MetricsHandler):
+class ProxyConfig():
+    def __init__(self):
+        self.upstream = os.getenv('UPSTREAM')
+        if not self.upstream:
+            print("Missing upstream Prometheus URL in environment variable 'UPSTREAM'!", file=sys.stderr)
+            sys.exit(1)
 
-    @staticmethod
-    def load_kubernetes_config():
+        self.ssl_verify = os.getenv('SSL_VERIFY', 'true').lower()
+        if self.ssl_verify == 'true':
+            self.ssl_verify = True
+        elif self.ssl_verify == 'false':
+            self.ssl_verify = False
+        elif self.ssl_verify == 'service':
+            self.ssl_verify = '/var/run/secrets/kubernetes.io/serviceaccount/service-ca.crt'
+        else:
+            print("Invalid value '{self.ssl_verify}' in environment variable 'SSL_VERIFY'", file=sys.stderr)
+            sys.exit(1)
+
         if 'KUBERNETES_PORT' in os.environ:  # App is running on a k8s cluster
             kubernetes.config.load_incluster_config()
         else:  # App is running on a developer workstation
             kubernetes.config.load_kube_config()
 
-        return kubernetes.client.Configuration()
+        self.k8s_config = kubernetes.client.Configuration()
+        self.service_account_token = self.k8s_config.api_key['authorization'].partition(' ')[2]
 
-    @staticmethod
-    def get_kubernetes_namespace():
-        if 'KUBERNETES_PORT' in os.environ:  # App is running on a k8s cluster
-            namespace = pathlib.Path('/var/run/secrets/kubernetes.io/serviceaccount/namespace').read_text()
-        else:  # App is running on a developer workstation
-            active_context = kubernetes.config.list_kube_config_contexts()[1]
-            namespace = active_context['context']['namespace']
 
-        return namespace
+# HTTP request handler proxying and filtering from a Prometheus federation endpoint
+class ProxyMetricsHandler(BaseHTTPRequestHandler):
+    PROXY_PATH_REGEX = re.compile('/([a-z0-9_-]*)')
 
-    @staticmethod
-    def get_service_ca_cert():
-        if 'KUBERNETES_PORT' in os.environ:  # App is running on a k8s cluster
-            return '/var/run/secrets/kubernetes.io/serviceaccount/service-ca.crt'
-        else:
-            return False
+    requests_session = requests.Session()
+
+    def __init__(self, config, *args, **kwargs):
+        self.config = config
+        super().__init__(*args, **kwargs)
 
     @staticmethod
     def new_openshift_client(k8s_config, token):
@@ -72,35 +63,17 @@ class ProxyMetricsHandler(MetricsHandler):
         return openshift.dynamic.DynamicClient(k8s_client)
 
     def do_GET(self):
-        k8s_config = self.load_kubernetes_config()
-        service_account_token = k8s_config.api_key['authorization'].partition(' ')[2]
-
         try:
-            dyn_client = self.new_openshift_client(k8s_config, service_account_token)
-            match = PROXY_PATH_REGEX.match(self.path)
+            match = self.PROXY_PATH_REGEX.fullmatch(self.path)
             if not match:
                 self.send_error(404, "Not found\n")
                 return
 
-            if match.group(1) == 'nodes':
-                node = dyn_client.resources.get(api_version='v1', kind='Node').get(name=match.group(4))
-                host = next(addr.address for addr in node.status.addresses if addr.type == 'InternalIP')
-                schema = 'https'
-                port = node.status.daemonEndpoints.kubeletEndpoint.Port
-                ca_cert = k8s_config.ssl_ca_cert if k8s_config.verify_ssl else False
-            else:
-                namespace = self.get_kubernetes_namespace()
-                dyn_client.resources.get(api_version='v1', kind='Service').get(namespace=namespace, name=match.group(4))  # ensure the service exists
-                host = f"{match.group(4)}.{namespace}.svc.cluster.local"
-                schema = match.group(3) or 'http'
-                port = match.group(6) or 8080
-                ca_cert = self.get_service_ca_cert() if k8s_config.verify_ssl else False
-
-            self.path = match.group(7)
+            job = match.group(1)
 
             # Log into OpenShift cluster with the bearer token passed in the HTTP request
             bearer_token = self.headers.get('X-Forwarded-Access-Token')
-            dyn_client = self.new_openshift_client(k8s_config, bearer_token)
+            dyn_client = self.new_openshift_client(self.config.k8s_config, bearer_token)
 
             # Determine all namespaces the user identified by the bearer token has access to
             project_list = dyn_client.resources.get(api_version='project.openshift.io/v1', kind='Project').get()
@@ -109,19 +82,22 @@ class ProxyMetricsHandler(MetricsHandler):
             self.send_error(e.status, e.body, e.headers.get('Content-Type', 'text/plain'))
             return
 
+        if not namespaces:
+            self.send_error(403, f"Account '{self.headers.get('X-Forwarded-User', '<unknown>')}' doesn't have access to any namespaces!\n")
+            return
+
         # Read metrics from upstream, using the pod service account
-        r = requests.get(f"{schema}://{host}:{port}/{self.path}", headers={'authorization': f"Bearer {service_account_token}"}, verify=ca_cert)
+        namespaces = '|'.join(namespaces)
+        r = self.requests_session.get(f"{self.config.upstream}/federate", params={'match[]': f'{{job="{job}",namespace=~"{namespaces}"}}'}, headers={'authorization': f"Bearer {self.config.service_account_token}"}, verify=self.config.ssl_verify)
         if r.status_code != requests.codes.ok:
             self.send_error(r.status_code, r.content)
             return
 
-        # Parse upstream metrics and pass through ProxyCollector for filtering by namespace
-        metric_families = text_string_to_metric_families(r.text)
-        self.registry = CollectorRegistry()
-        self.registry.register(ProxyCollector(metric_families, namespaces))
-
-        # Export filtered metrics
-        super().do_GET()
+        self.send_response(200)
+        self.send_header('Content-Type', self.headers.get('Content-Type', 'text/plain'))
+        self.end_headers()
+        for chunk in r.iter_content(chunk_size=4096):
+            self.wfile.write(chunk)
 
     def send_error(self, status_code, message, content_type='text/plain'):
         self.send_response(status_code)
@@ -140,5 +116,5 @@ class ProxyMetricsHandler(MetricsHandler):
 
 
 if __name__ == '__main__':
-    httpd = ForkingHTTPServer(('127.0.0.1', 8080), ProxyMetricsHandler)
+    httpd = ProxyHTTPServer(('127.0.0.1', 8080), partial(ProxyMetricsHandler, ProxyConfig()))
     httpd.serve_forever()

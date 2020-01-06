@@ -103,6 +103,7 @@ objects:
         from:
           kind: ImageStreamTag
           name: openshift-prometheus-proxy-base:latest
+        incremental: true
       type: Source
     triggers:
     - type: ConfigChange
@@ -133,7 +134,10 @@ objects:
       targetPort: 8443
     selector:
       app: openshift-prometheus-proxy
-    sessionAffinity: None
+    sessionAffinity: ClientIP
+    sessionAffinityConfig:
+      clientIP:
+        timeoutSeconds: 10800
     type: ClusterIP
 - apiVersion: v1
   kind: Route
@@ -181,6 +185,11 @@ objects:
         containers:
         - image: openshift-prometheus-proxy:latest
           name: openshift-prometheus-proxy
+          env:
+          - name: UPSTREAM
+            value: ${OPENSHIFT_PROMETHEUS_PROXY_UPSTREAM}
+          - name: SSL_VERIFY
+            value: ${OPENSHIFT_PROMETHEUS_PROXY_TLS_VERIFY}
           ports:
           - containerPort: 8080
             protocol: TCP
@@ -236,11 +245,17 @@ parameters:
 - description: Whether to import new images automatically.
   name: SCHEDULE_IMAGE_IMPORTS
   value: 'false'
-- description: Whether to import new images automatically.
+- description: Upstream Prometheus Server of the OpenShift Prometheus proxy.
+  name: OPENSHIFT_PROMETHEUS_PROXY_UPSTREAM
+  required: true
+- description: Whether verify TLS certificates of the upstream Prometheus proxy. Defaults to 'true'.
+  name: OPENSHIFT_PROMETHEUS_PROXY_TLS_VERIFY
+  value: 'true'
+- description: External hostname of OpenShift Prometheus proxy.
   name: OPENSHIFT_PROMETHEUS_PROXY_HOSTNAME
   required: true
-- description: Secret used for node metrics proxy session signing
-  displayName: Node Metrics Proxy Session Secret
+- description: Secret used for OpenShift Prometheus proxy session signing
+  displayName: OpenShift Prometheus Proxy Session Secret
   name: OPENSHIFT_PROMETHEUS_PROXY_SESSION_SECRET
   generate: expression
-  from: "[a-zA-Z0-9]{32}"
+  from: "[a-zA-Z0-9_-]{32}"

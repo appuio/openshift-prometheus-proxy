@@ -1,0 +1,143 @@
+apiVersion: v1
+kind: Template
+metadata:
+  name: monitor-openshift-prometheus-proxy
+objects:
+- apiVersion: v1
+  kind: Service
+  metadata:
+    labels:
+      app: openshift-prometheus-proxy
+    name: openshift-prometheus-proxy
+  spec:
+    clusterIP: None
+    ports:
+    - name: proxy
+      port: 1
+      protocol: TCP
+      targetPort: 1
+    selector: {}
+    sessionAffinity: None
+    type: ClusterIP
+- kind: Endpoints
+  apiVersion: v1
+  metadata:
+    labels:
+      app: openshift-prometheus-proxy
+    name: openshift-prometheus-proxy
+  subsets:
+  - addresses:
+    - ip: 192.0.2.0  # dummy address, not used but required by resource
+    ports:
+    - name: proxy
+      port: 1
+      protocol: TCP
+- apiVersion: monitoring.coreos.com/v1
+  kind: ServiceMonitor
+  metadata:
+    labels:
+      app: openshift-prometheus-proxy
+      prometheus: ${PROMETHEUS_ID}
+    name: openshift-prometheus-proxy
+  spec:
+    endpoints:
+    - bearerTokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token
+      honorLabels: true
+      honorTimestamps: true
+      interval: 30s
+      scrapeTimeout: 10s
+      scheme: https
+      path: /kubelet
+      port: proxy
+      tlsConfig:
+        caFile: /var/run/secrets/kubernetes.io/serviceaccount/service-ca.crt
+        insecureSkipVerify: ${{OPENSHIFT_PROMETHEUS_PROXY_SCRAPE_SKIP_TLS_VERIFY}}
+      relabelings:
+      - action: replace
+        replacement: ${OPENSHIFT_PROMETHEUS_PROXY_SCRAPE_ENDPOINT}
+        targetLabel: __address__
+      metricRelabelings:
+      - targetLabel: cluster
+        replacement: ''
+        action: replace
+      - targetLabel: prometheus_replica
+        replacement: ''
+        action: replace
+      - sourceLabels: [__name__]
+        separator: ;
+        regex: container_(network_tcp_usage_total|network_udp_usage_total|cpu_user_seconds_total|cpu_cfs_periods_total|memory_swap|memory_cache|last_seen|fs_(reads_total|writes_total|read_seconds_total|write_seconds_total|sector_(.*)|io_(.*)|reads_merged_total|writes_merged_total)|tasks_state|memory_failcnt|memory_failures_total|spec_memory_swap_limit_bytes|fs_(.*)_bytes_total|spec_(.*))
+        replacement: $1
+        action: drop
+      - sourceLabels: [pod_name]
+        separator: ;
+        regex: (.+)
+        targetLabel: pod
+        replacement: $1
+        action: replace
+      - sourceLabels: [container_name]
+        separator: ;
+        regex: (.+)
+        targetLabel: container
+        replacement: $1
+        action: replace
+      - sourceLabels: [namespace, pod_name, instance]
+        separator: ;
+        regex: ([^;]+);([^;]+);[^:]+:(.+)
+        targetLabel: instance
+        replacement: $1--$2:$3
+        action: replace
+      - sourceLabels: [pod, container]
+        separator: ;
+        regex: (.+);(.+)
+        targetLabel: pod_container
+        replacement: $1/$2
+        action: replace
+    - bearerTokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token
+      honorLabels: true
+      honorTimestamps: true
+      interval: 2m
+      scrapeTimeout: 10s
+      scheme: https
+      path: /kube-state-metrics
+      port: proxy
+      tlsConfig:
+        caFile: /var/run/secrets/kubernetes.io/serviceaccount/service-ca.crt
+        insecureSkipVerify: ${{OPENSHIFT_PROMETHEUS_PROXY_SCRAPE_SKIP_TLS_VERIFY}}
+      relabelings:
+      - action: replace
+        replacement: ${OPENSHIFT_PROMETHEUS_PROXY_SCRAPE_ENDPOINT}
+        targetLabel: __address__
+      metricRelabelings:
+      - targetLabel: cluster
+        replacement: ''
+        action: replace
+      - targetLabel: prometheus_replica
+        replacement: ''
+        action: replace
+      - sourceLabels: [namespace, pod, instance]
+        separator: ;
+        regex: ([^;]+);([^;]+);[^:]+:(.+)
+        targetLabel: instance
+        replacement: $1--$2:$3
+        action: replace
+      - sourceLabels: [pod, container]
+        separator: ;
+        regex: (.+);(.+)
+        targetLabel: pod_container
+        replacement: $1/$2
+        action: replace
+    jobLabel: app
+    namespaceSelector: {}
+    selector:
+      matchLabels:
+        app: openshift-prometheus-proxy
+parameters:
+- description: 'Endpoint of OpenShift Prometheus Proxy to scrape.'
+  name: OPENSHIFT_PROMETHEUS_PROXY_SCRAPE_ENDPOINT
+  required: true
+- description: Whether to skip TLS certificate verification in the openshift-prometheus-proxy ServiceMonitor. Defaults to 'false'.
+  name: OPENSHIFT_PROMETHEUS_PROXY_SCRAPE_SKIP_TLS_VERIFY
+  value: 'false'
+- description: ID of Prometheus instance, is used in label keys and must be unique on cluster. Defaults to 'apps'.
+  name: PROMETHEUS_ID
+  value: apps
