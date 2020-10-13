@@ -3,9 +3,11 @@
 import os
 import re
 import sys
+import traceback
 from functools import partial
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
+from urllib.parse import parse_qs, unquote, unquote_plus, urlencode, urlparse, unquote
 
 import kubernetes
 import openshift.dynamic
@@ -47,7 +49,7 @@ class ProxyConfig():
 
 # HTTP request handler proxying and filtering from a Prometheus federation endpoint
 class ProxyMetricsHandler(BaseHTTPRequestHandler):
-    PROXY_PATH_REGEX = re.compile('/([a-z0-9_-]*)')
+    INSTANCE_VECTOR_SELECTOR_REGEX = re.compile('([a-zA-Z_:][a-zA-Z0-9_:]*)?({.*})?')
 
     requests_session = requests.Session()
 
@@ -64,13 +66,6 @@ class ProxyMetricsHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         try:
-            match = self.PROXY_PATH_REGEX.fullmatch(self.path)
-            if not match:
-                self.send_error(404, "Not found\n")
-                return
-
-            job = match.group(1)
-
             # Log into OpenShift cluster with the bearer token passed in the HTTP request
             bearer_token = self.headers.get('X-Forwarded-Access-Token')
             dyn_client = self.new_openshift_client(self.config.k8s_config, bearer_token)
@@ -79,6 +74,7 @@ class ProxyMetricsHandler(BaseHTTPRequestHandler):
             project_list = dyn_client.resources.get(api_version='project.openshift.io/v1', kind='Project').get()
             namespaces = {project.metadata.name for project in project_list.items}
         except ApiException as e:
+            traceback.print_exc()
             self.send_error(e.status, e.body, e.headers.get('Content-Type', 'text/plain'))
             return
 
@@ -86,9 +82,28 @@ class ProxyMetricsHandler(BaseHTTPRequestHandler):
             self.send_error(403, f"Account '{self.headers.get('X-Forwarded-User', '<unknown>')}' doesn't have access to any namespaces!\n")
             return
 
+        namespace_selector = f"namespace=~\"{'|'.join(namespaces)}\""
+        query_args = parse_qs(urlparse(self.path).query)
+        match_args = query_args.get('match[]')
+        if not match_args:
+            self.send_error(400, "Missing match[] parameter\n")
+            return
+        for i, match_arg in enumerate(match_args):
+            re_match = self.INSTANCE_VECTOR_SELECTOR_REGEX.fullmatch(match_arg)
+            if not re_match:
+                self.send_error(400, f"Not a valid vector selector: '{match_arg}'!")
+                continue
+                #return
+            metric_name = re_match.group(1) or ''
+            label_selectors = re_match.group(2)
+            if label_selectors and label_selectors != '{}':
+                match_args[i] = f"{metric_name}{label_selectors[:-1]},{namespace_selector}}}"
+            else:
+                match_args[i] = f"{metric_name}{{{namespace_selector}}}"
+
         # Read metrics from upstream, using the pod service account
         namespaces = '|'.join(namespaces)
-        r = self.requests_session.get(f"{self.config.upstream}/federate", params={'match[]': f'{{job="{job}",namespace=~"{namespaces}"}}'}, headers={'authorization': f"Bearer {self.config.service_account_token}"}, verify=self.config.ssl_verify)
+        r = self.requests_session.get(f"{self.config.upstream}/federate", params=query_args, headers={'authorization': f"Bearer {self.config.service_account_token}"}, verify=self.config.ssl_verify)
         if r.status_code != requests.codes.ok:
             self.send_error(r.status_code, r.content)
             return
@@ -108,6 +123,8 @@ class ProxyMetricsHandler(BaseHTTPRequestHandler):
         self.wfile.write(message)
 
     def log_message(self, format, *args):
+        if args:
+            args = (unquote(args[0]),) + args[1:]
         sys.stderr.write("%s - %s [%s] %s\n" %
                          (self.headers.get('X-Forwarded-For', self.address_string()).partition(',')[0].strip(),
                           self.headers.get('X-Forwarded-User', '-'),
