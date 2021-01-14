@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import json
 import os
 import re
 import sys
@@ -7,7 +8,7 @@ import traceback
 from functools import partial
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
-from urllib.parse import parse_qs, unquote, unquote_plus, urlencode, urlparse, unquote
+from urllib.parse import parse_qs, unquote, unquote_plus, urlencode, urlparse
 
 import kubernetes
 import openshift.dynamic
@@ -83,7 +84,20 @@ class ProxyMetricsHandler(BaseHTTPRequestHandler):
             return
 
         namespace_selector = f"namespace=~\"{'|'.join(namespaces)}\""
-        query_args = parse_qs(urlparse(self.path).query)
+
+        url = urlparse(self.path)
+
+        if url.path == "/federate":
+            self.get_federate(url, namespace_selector)
+        elif url.path == "/jobs":
+            self.get_jobs(url, namespace_selector)
+        else:
+            print(url.path)
+            self.send_error(404, "Not found")
+            return
+
+    def get_federate(self, url, namespace_selector):
+        query_args = parse_qs(url.query)
         match_args = query_args.get('match[]')
         if not match_args:
             self.send_error(400, "Missing match[] parameter\n")
@@ -102,7 +116,7 @@ class ProxyMetricsHandler(BaseHTTPRequestHandler):
                 match_args[i] = f"{metric_name}{{{namespace_selector}}}"
 
         # Read metrics from upstream, using the pod service account
-        namespaces = '|'.join(namespaces)
+        # namespaces = '|'.join(namespaces)
         r = self.requests_session.get(f"{self.config.upstream}/federate", params=query_args, headers={'authorization': f"Bearer {self.config.service_account_token}"}, verify=self.config.ssl_verify)
         if r.status_code != requests.codes.ok:
             self.send_error(r.status_code, r.content)
@@ -113,6 +127,22 @@ class ProxyMetricsHandler(BaseHTTPRequestHandler):
         self.end_headers()
         for chunk in r.iter_content(chunk_size=4096):
             self.wfile.write(chunk)
+
+    def get_jobs(self, url, namespace_selector):
+        query_args = {'query': f"count({{{namespace_selector}}}) by (job)"}
+        r = self.requests_session.get(f"{self.config.upstream}/api/v1/query", params=query_args, headers={'authorization': f"Bearer {self.config.service_account_token}"}, verify=self.config.ssl_verify)
+        if r.status_code != requests.codes.ok:
+            self.send_error(r.status_code, r.content)
+            return
+
+        json_result = json.loads(r.content)
+        jobs = [f"'{job['metric'].get('job', '')}'\n" for job in json_result['data']['result']]
+        jobs.sort()
+
+        self.send_response(200)
+        self.send_header('Content-Type', self.headers.get('Content-Type', 'text/plain'))
+        self.end_headers()
+        self.wfile.write(''.join(jobs).encode())
 
     def send_error(self, status_code, message, content_type='text/plain'):
         self.send_response(status_code)
