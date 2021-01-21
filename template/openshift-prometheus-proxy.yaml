@@ -257,5 +257,5 @@ parameters:
 - description: Secret used for OpenShift Prometheus proxy session signing
   displayName: OpenShift Prometheus Proxy Session Secret
   name: OPENSHIFT_PROMETHEUS_PROXY_SESSION_SECRET
+  from: '[a-zA-Z0-9]{32}'
   generate: expression
-  from: "[a-zA-Z0-9_-]{32}"

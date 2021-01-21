@@ -47,7 +47,10 @@ objects:
       interval: 30s
       scrapeTimeout: 10s
       scheme: https
-      path: /kubelet
+      path: /federate
+      params:
+        'match[]':
+        - '{job="kubelet"}'
       port: proxy
       tlsConfig:
         caFile: /var/run/secrets/kubernetes.io/serviceaccount/service-ca.crt
@@ -98,7 +101,10 @@ objects:
       interval: 2m
       scrapeTimeout: 10s
       scheme: https
-      path: /kube-state-metrics
+      path: /federate
+      params:
+        'match[]':
+        - '{job="kube-state-metrics"}'
       port: proxy
       tlsConfig:
         caFile: /var/run/secrets/kubernetes.io/serviceaccount/service-ca.crt
