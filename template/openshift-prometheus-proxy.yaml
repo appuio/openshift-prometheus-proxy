@@ -22,6 +22,8 @@ objects:
   metadata:
     name: view:openshift-prometheus-proxy
   roleRef:
+    apiGroup: rbac.authorization.k8s.io
+    kind: ClusterRole
     name: view
   subjects:
   - kind: ServiceAccount
