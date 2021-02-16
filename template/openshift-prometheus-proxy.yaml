@@ -3,7 +3,7 @@ kind: Template
 metadata:
   name: openshift-prometheus-proxy
 objects:
-- apiVersion: v1
+- apiVersion: rbac.authorization.k8s.io/v1
   kind: Role
   metadata:
     name: access-openshift-prometheus-proxy
@@ -16,12 +16,14 @@ objects:
     - services
     verbs:
     - get
-- apiVersion: v1
+- apiVersion: rbac.authorization.k8s.io/v1
   groupNames: null
   kind: RoleBinding
   metadata:
     name: view:openshift-prometheus-proxy
   roleRef:
+    apiGroup: rbac.authorization.k8s.io
+    kind: ClusterRole
     name: view
   subjects:
   - kind: ServiceAccount
@@ -33,7 +35,7 @@ objects:
     labels:
       app: openshift-prometheus-proxy
     name: openshift-prometheus-proxy
-- apiVersion: v1
+- apiVersion: image.openshift.io/v1
   kind: ImageStream
   metadata:
     labels:
@@ -52,7 +54,7 @@ objects:
       name: latest
       referencePolicy:
         type: Source
-- apiVersion: v1
+- apiVersion: image.openshift.io/v1
   kind: ImageStream
   metadata:
     name: ose-oauth-proxy
@@ -69,7 +71,7 @@ objects:
       name: latest
       referencePolicy:
         type: Source
-- apiVersion: v1
+- apiVersion: image.openshift.io/v1
   kind: ImageStream
   metadata:
     labels:
@@ -78,7 +80,7 @@ objects:
   spec:
     lookupPolicy:
       local: false
-- apiVersion: v1
+- apiVersion: build.openshift.io/v1
   kind: BuildConfig
   metadata:
     labels:
