@@ -44,7 +44,7 @@ class ProxyConfig():
         else:  # App is running on a developer workstation
             kubernetes.config.load_kube_config()
 
-        self.k8s_config = kubernetes.client.Configuration()
+        self.k8s_config = kubernetes.client.Configuration().get_default_copy()
         self.service_account_token = self.k8s_config.api_key['authorization'].partition(' ')[2]
 
 
