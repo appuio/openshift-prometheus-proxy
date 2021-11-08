@@ -163,5 +163,6 @@ class ProxyMetricsHandler(BaseHTTPRequestHandler):
 
 
 if __name__ == '__main__':
-    httpd = ProxyHTTPServer(('0.0.0.0', 8080), partial(ProxyMetricsHandler, ProxyConfig()))
+    # only listen for connections from ose-oauth-proxy in the same pod (see template/openshift-prometheus-proxy.yaml)
+    httpd = ProxyHTTPServer(('127.0.0.1', 8080), partial(ProxyMetricsHandler, ProxyConfig()))
     httpd.serve_forever()
