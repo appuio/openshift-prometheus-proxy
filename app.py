@@ -44,7 +44,7 @@ class ProxyConfig():
         else:  # App is running on a developer workstation
             kubernetes.config.load_kube_config()
 
-        self.k8s_config = kubernetes.client.Configuration()
+        self.k8s_config = kubernetes.client.Configuration().get_default_copy()
         self.service_account_token = self.k8s_config.api_key['authorization'].partition(' ')[2]
 
 
@@ -163,5 +163,6 @@ class ProxyMetricsHandler(BaseHTTPRequestHandler):
 
 
 if __name__ == '__main__':
+    # only listen for connections from ose-oauth-proxy in the same pod (see template/openshift-prometheus-proxy.yaml)
     httpd = ProxyHTTPServer(('127.0.0.1', 8080), partial(ProxyMetricsHandler, ProxyConfig()))
     httpd.serve_forever()
