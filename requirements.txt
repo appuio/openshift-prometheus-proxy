@@ -18,7 +18,7 @@ idna==3.3
     # via requests
 jinja2==3.0.2
     # via openshift
-kubernetes==12.0.1
+kubernetes==20.13.0
     # via openshift
 markupsafe==2.0.1
     # via jinja2
