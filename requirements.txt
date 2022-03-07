@@ -46,7 +46,7 @@ requests-oauthlib==1.3.0
     # via kubernetes
 rsa==4.7.2
     # via google-auth
-ruamel.yaml==0.17.17
+ruamel.yaml==0.17.21
     # via openshift
 ruamel.yaml.clib==0.2.6
     # via ruamel.yaml
