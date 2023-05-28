@@ -38,7 +38,7 @@ python-string-utils==1.0.0
     # via openshift
 pyyaml==6.0
     # via kubernetes
-requests==2.26.0
+requests==2.31.0
     # via
     #   kubernetes
     #   requests-oauthlib
