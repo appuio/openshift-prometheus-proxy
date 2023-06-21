@@ -44,7 +44,7 @@ requests==2.26.0
     #   requests-oauthlib
 requests-oauthlib==1.3.0
     # via kubernetes
-rsa==4.7.2
+rsa==4.9
     # via google-auth
 ruamel.yaml==0.17.17
     # via openshift
