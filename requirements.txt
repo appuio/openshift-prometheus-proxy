@@ -16,7 +16,7 @@ google-auth==2.3.3
     # via kubernetes
 idna==3.3
     # via requests
-jinja2==3.0.2
+jinja2==3.1.3
     # via openshift
 kubernetes==12.0.1
     # via openshift
